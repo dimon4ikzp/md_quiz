@@ -1,0 +1,199 @@
+<?php
+
+include_once 'md_quiz.features.inc';
+
+/**
+ * Implements hook_preprocess_node
+ * @param $vars
+ */
+function md_quiz_preprocess_node($vars) {
+  $_SESSION['quiz_score'] = 0;
+  $_SESSION['quiz_step'] = 1;
+  $_SESSION['quiz_start'] = time();
+}
+
+/**
+* Implements of hook_form_FORM_ID_alter().
+*
+*/
+function md_quiz_form_field_quiz_answer_form_alter(&$form, &$form_state) {
+  //krumo($form);
+  $use_ajax = variable_get('field_quiz_use_ajax', TRUE);
+  $form['answers']['replace_answer_area']['#prefix'] = '<div id="replace-answer-result-area-'.$form['field_name']['#value'].'">';
+  $form['answers']['#type'] = 'container';
+
+  if (!empty($use_ajax)) {
+    drupal_add_library('system', 'drupal.ajax');
+    drupal_add_library('system', 'jquery.form');
+    // Ajax submit.
+    //$form['submit']['#submit'] = array('field_quiz_ajax_answer_form_submit');
+    $form['submit']['#ajax']['callback'] = 'md_quiz_ajax_validate_callback';
+    //$form['submit']['#ajax']['wrapper'] = 'replace-answer-result-area-'.$form['field_name']['#value'];
+    unset($form['submit']['#ajax']['wrapper']);
+    $form['answers']['items']['#id'] = 'edit-answers-items-'.$form['field_name']['#value'];
+  }
+  //$form['#attributes']['style'] = 'display:none;';
+  $form['submit']['#value'] = t('Check');
+  $form['submit']['#attributes']['class'][] = t('btn btn-primary pull-right check');
+  //$form_state['step'] = 1;
+  // Submit button.
+  $form['next'] = array(
+    '#type' => 'submit',
+    '#value' => t('Next'),
+    '#attributes' => array('class' => array('btn btn-primary pull-right next hidden'))
+  );
+
+  if (!empty($use_ajax)) {
+    // Ajax submit.
+    //$form['next']['#submit'] = array('field_quiz_ajax_answer_form_submit');
+    $form['next']['#ajax'] = array(
+      'callback' => 'md_quiz_ajax_next_callback',
+    );
+  }
+}
+
+function md_quiz_ajax_next_callback($form, $form_state) {
+  $commands = array();
+  $cur_field_with_dashes = str_replace('_','-', $form['field_name']['#value']);
+  $next_field_arr = explode('-', $cur_field_with_dashes);
+
+  //increment next field array value
+  $next_field_arr[2]++;
+
+  if ($_SESSION['quiz_step'] == 6) {
+    $percentage = $_SESSION['quiz_score'] *20;
+    if ($_SESSION['quiz_score'] > 3) {
+      $commands[] = ajax_command_invoke('.quiz-good-result', 'show');
+    } else {
+      $commands[] = ajax_command_invoke('.quiz-bad-result', 'show');
+    }
+
+
+    $commands[] = ajax_command_prepend('.region-content','<div class="quiz-points">You have reached '.$_SESSION['quiz_score'] .' of 5 points, (' .$percentage. '%)</div>');
+    $commands[] = ajax_command_prepend('.region-content','<div class="your-time">Your time: ' . gmdate("H:i:s", time() - $_SESSION['quiz_start']) . '</div>');
+    $commands[] = ajax_command_prepend('.region-content','<div class="quiz-score">' .$_SESSION['quiz_score'] .' of 5 questions answered correctly</div>');
+    $commands[] = ajax_command_prepend('.region-content','<div class="quiz-header">Results</div>');
+
+  }
+  //clear messages
+  $commands[] = ajax_command_replace('div.messages', '<div class="messages"></div>');
+  $commands[] = ajax_command_replace('div.quiz-step', '<div class="quiz-step">Question '.$_SESSION['quiz_step'].' of 5</div>');
+
+  $commands[] = ajax_command_invoke('.field-name-'.$cur_field_with_dashes, 'addClass', array('hidden'));
+  $commands[] = ajax_command_invoke('.field-name-'.implode('-', $next_field_arr), 'removeClass', array('hidden'));
+  return array('#type' => 'ajax', '#commands' => $commands);
+}
+
+/**
+ * Ajax callback function to get and display the message.
+ *
+ * @param $form
+ * @param $form_state
+ * @return array
+ */
+function md_quiz_ajax_validate_callback($form, $form_state) {
+
+  $commands = array();
+  //clear messages
+  $commands[] = ajax_command_replace('div.messages', '<div class="messages"></div>');
+
+  if (!empty($form_state['values']['answers']['items'])) {
+
+    $error = field_quiz_validate_answer_selection($form_state);
+    $entity_type = $form_state['values']['entity_type'];
+    $entity_id = $form_state['values']['entity_id'];
+    $field = $form['field_name']['#value'];
+    // If user answered wrong.
+    if ($error) {
+      $content = md_quiz_page_wrong_answer($entity_type, $entity_id, TRUE, $field);
+    }
+    // Success.
+    else {
+      $content = md_quiz_page_correct_answer($entity_type,$entity_id, TRUE, $field);
+      $_SESSION['quiz_score']++;
+    }
+
+    $_SESSION['quiz_step']++;
+
+    $form['replace_answer_area'] = array(
+      '#type' => 'markup',
+      '#markup' => $content,
+      '#prefix' => '<div id="replace-answer-result-area-'.$form['field_name']['#value'].'">',
+      '#suffix' => '</div>',
+    );
+    $field = $form['field_name']['#value'];
+    //$selector = '#edit-answers-items-'.$field;
+    $selector = '#edit-answers-items-'.$field .' input';
+    $selector_selected = '#edit-answers-items-'.$field .' input:checked';
+
+    $commands[] = ajax_command_replace('#replace-answer-result-area-'.$form['field_name']['#value'], render($form['replace_answer_area']));
+
+    if ($error) {
+      $commands[] = ajax_command_invoke($selector, 'addClass', array('correct-answer'));
+      $commands[] = ajax_command_invoke($selector_selected, 'addClass', array('incorrect-answer'));
+    } else {
+      $commands[] = ajax_command_invoke($selector_selected, 'addClass', array('correct-answer'));
+    }
+    $commands[] = ajax_command_invoke($selector, 'attr', array('disabled', true));
+    $commands[] = ajax_command_remove('.field-name-'.str_replace('_','-', $form['field_name']['#value']).' button.check');
+    $commands[] = ajax_command_invoke('.field-name-'.str_replace('_','-', $form['field_name']['#value']).' button.next', 'removeClass', array('hidden'));
+
+  } else {
+    drupal_get_messages();
+    drupal_set_message(t('Choose an item please'), 'warning');
+    $commands[] = ajax_command_remove('div.messages');
+    $commands[] = ajax_command_prepend('.region-content',theme('status_messages'));
+  }
+
+  return array('#type' => 'ajax', '#commands' => $commands);
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function md_quiz_form_field_ui_field_edit_form_alter(&$form, &$form_state, $form_id) {
+  if (isset($form['instance']['label'])) {
+    $form['instance']['label']['#maxlength'] = 1024;
+  }
+}
+
+/**
+ * Sorry, wrong answer page
+ * - can be access by everyone
+ *
+ * @param int $entity_id
+ * @param bool $ajax
+ * @return string $content
+ */
+function md_quiz_page_wrong_answer($entity_type, $entity_id, $ajax = FALSE, $field) {
+  $content = '';
+  $entity = node_load($entity_id);
+
+  $t = field_view_field($entity_type, $entity, $field.'_answer_correct', array('label' => 'hidden'));
+  // Theme the wrong answer page.
+
+  $content .= "<div class='field-quiz-answer-wrong'>Incorrect</div>\n". render($t);
+  drupal_add_css(drupal_get_path('module', 'field_quiz') . '/css/field_quiz.css');
+  return $content;
+}
+
+
+/**
+ * Correct answer page.
+ *
+ * @param int $entity_id
+ * @param bool $ajax
+ * @return string $content
+ */
+function md_quiz_page_correct_answer($entity_type, $entity_id, $ajax = FALSE, $field) {
+  $content = '';
+
+  $entity = node_load($entity_id);
+
+  $t = field_view_field($entity_type, $entity, $field.'_answer_correct', array('label' => 'hidden'));
+  // Theme the correct answer page.
+  $content .= "<div class='field-quiz-answer-correct'>Correct</div>\n". render($t);
+
+  drupal_add_css(drupal_get_path('module', 'field_quiz') . '/css/field_quiz.css');
+  return $content;
+}
